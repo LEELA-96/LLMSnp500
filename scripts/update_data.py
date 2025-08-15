@@ -14,10 +14,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -----------------------------
-# 2️⃣ File paths
+# 2️⃣ File paths (updated)
 # -----------------------------
 symbols_file = "data/SP500_Symbols_2.csv"
-company_file = "data/Company_S&HQS (1).xlsx"
+company_file = "data/Company_S_HQ_1.xlsx"
 
 # -----------------------------
 # 3️⃣ Load files
