@@ -40,7 +40,7 @@ for _, row in company_df.iterrows():
         supabase.table("company_metadata").upsert({
             "symbol": row["Symbol"],
             "company_name": row["Company Name"],
-            "headquarters": row.get("City", "Unknown")  # use City as headquarters
+            "headquarters": row.get("City", "Unknown")  # use City as HQ
         }).execute()
     except Exception as e:
         print(f"Error inserting company {row['Symbol']}: {e}")
@@ -94,7 +94,7 @@ for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df), desc="Processin
     for _, r in df.iterrows():
         record = {
             "symbol": symbol,
-            "date": r["date"].strftime("%Y-%m-%d"),
+            "date": pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
             "open": float(r["open"]),
             "high": float(r["high"]),
             "low": float(r["low"]),
@@ -116,7 +116,7 @@ for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df), desc="Processin
         try:
             supabase.table("stock_embeddings").upsert({
                 "symbol": symbol,
-                "date": r["date"].strftime("%Y-%m-%d"),
+                "date": pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
                 "embedding": embedding
             }).execute()
         except Exception as e:
