@@ -1,1 +1,12 @@
+pandas
+yfinance
+sqlalchemy
+psycopg2-binary
+supabase
+sentence-transformers
+faiss-cpu
+streamlit
+gpt4all
+langchain
+openpyxl
 
