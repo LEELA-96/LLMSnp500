@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 import yfinance as yf
-import numpy as np
 from tqdm import tqdm
 from datetime import datetime, timedelta
 from supabase import create_client, Client
@@ -18,7 +17,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # 2️⃣ File paths
 # -----------------------------
 symbols_file = "data/SP500_Symbols_2.csv"
-company_file = "data/Company_S_HQ_1.xlsx"
+company_file = "data/Company_S&HQS (1).xlsx"
 
 # -----------------------------
 # 3️⃣ Load files
@@ -26,14 +25,14 @@ company_file = "data/Company_S_HQ_1.xlsx"
 symbols_df = pd.read_csv(symbols_file)
 company_df = pd.read_excel(company_file)
 
-# Strip column names to remove spaces
+# Strip column names
 company_df.columns = company_df.columns.str.strip()
 symbols_df.columns = symbols_df.columns.str.strip()
 
 # -----------------------------
-# 4️⃣ Insert company metadata
+# 4️⃣ Insert/update company metadata
 # -----------------------------
-print("🔹 Inserting/updating company metadata...")
+print("🔹 Updating company metadata...")
 
 for _, row in company_df.iterrows():
     try:
@@ -92,34 +91,33 @@ for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df), desc="Processin
     })
 
     for _, r in df.iterrows():
-        record = {
-            "symbol": symbol,
-            "date": pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
-            "open": float(r["open"]),
-            "high": float(r["high"]),
-            "low": float(r["low"]),
-            "close": float(r["close"]),
-            "volume": int(r["volume"])
-        }
-
         try:
+            date_val = pd.to_datetime(r["date"])
+            date_str = date_val.strftime("%Y-%m-%d")
+
             # Insert stock data
-            supabase.table("stock_data").upsert(record).execute()
-        except Exception as e:
-            print(f"Error inserting stock data for {symbol} on {r['date']}: {e}")
-            continue
+            supabase.table("stock_data").upsert({
+                "symbol": symbol,
+                "date": date_str,
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": int(r["volume"])
+            }).execute()
 
-        # Generate embedding
-        text_for_embedding = f"{symbol} {r['date']} open:{r['open']} close:{r['close']} high:{r['high']} low:{r['low']} volume:{r['volume']}"
-        embedding = model.encode(text_for_embedding).tolist()
+            # Generate embedding
+            text_for_embedding = f"{symbol} {date_str} open:{r['open']} close:{r['close']} high:{r['high']} low:{r['low']} volume:{r['volume']}"
+            embedding = model.encode(text_for_embedding).tolist()
 
-        try:
+            # Insert embedding
             supabase.table("stock_embeddings").upsert({
                 "symbol": symbol,
-                "date": pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
+                "date": date_str,
                 "embedding": embedding
             }).execute()
+
         except Exception as e:
-            print(f"Error inserting embedding for {symbol} on {r['date']}: {e}")
+            print(f"Error processing {symbol} on {r['date']}: {e}")
 
 print("✅ Stock data and embeddings updated successfully!")
