@@ -26,34 +26,48 @@ company_file = "data/Company_S_HQ_1.xlsx"
 symbols_df = pd.read_csv(symbols_file)
 company_df = pd.read_excel(company_file)
 
+# Strip column names to remove spaces
+company_df.columns = company_df.columns.str.strip()
+symbols_df.columns = symbols_df.columns.str.strip()
+
 # -----------------------------
 # 4️⃣ Insert company metadata
 # -----------------------------
+print("🔹 Inserting/updating company metadata...")
+
 for _, row in company_df.iterrows():
-    supabase.table("company_metadata").upsert({
-        "symbol": row["Symbol"],
-        "company_name": row["Company Name"],
-        "headquarters": row["Headquarters"]
-    }).execute()
+    try:
+        supabase.table("company_metadata").upsert({
+            "symbol": row["Symbol"],
+            "company_name": row["Company Name"],
+            "headquarters": row.get("City", "Unknown")  # use City as headquarters
+        }).execute()
+    except Exception as e:
+        print(f"Error inserting company {row['Symbol']}: {e}")
+
+print("✅ Company metadata updated.")
 
 # -----------------------------
-# 5️⃣ Fetch historical stock data
+# 5️⃣ Fetch historical stock data & embeddings
 # -----------------------------
-model = SentenceTransformer('all-MiniLM-L6-v2')  # small & fast
+model = SentenceTransformer('all-MiniLM-L6-v2')  # fast & free
 
-for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df)):
+for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df), desc="Processing symbols"):
     symbol = row["Symbol"]
 
     # Check latest date in Supabase
-    res = supabase.table("stock_data").select("date").eq("symbol", symbol).order("date", desc=True).limit(1).execute()
-    if res.data:
-        last_date = pd.to_datetime(res.data[0]['date'])
-        start_date = last_date + timedelta(days=1)
-    else:
-        start_date = datetime.now() - timedelta(days=5*365)  # last 5 years
+    try:
+        res = supabase.table("stock_data").select("date").eq("symbol", symbol).order("date", desc=True).limit(1).execute()
+        if res.data:
+            last_date = pd.to_datetime(res.data[0]['date'])
+            start_date = last_date + timedelta(days=1)
+        else:
+            start_date = datetime.now() - timedelta(days=5*365)  # last 5 years
+    except Exception as e:
+        print(f"Error checking last date for {symbol}: {e}")
+        start_date = datetime.now() - timedelta(days=5*365)
 
     end_date = datetime.now()
-
     if start_date > end_date:
         continue  # already up to date
 
@@ -88,18 +102,24 @@ for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df)):
             "volume": int(r["volume"])
         }
 
-        # Insert stock data
-        supabase.table("stock_data").upsert(record).execute()
+        try:
+            # Insert stock data
+            supabase.table("stock_data").upsert(record).execute()
+        except Exception as e:
+            print(f"Error inserting stock data for {symbol} on {r['date']}: {e}")
+            continue
 
         # Generate embedding
         text_for_embedding = f"{symbol} {r['date']} open:{r['open']} close:{r['close']} high:{r['high']} low:{r['low']} volume:{r['volume']}"
         embedding = model.encode(text_for_embedding).tolist()
 
-        # Upsert embedding
-        supabase.table("stock_embeddings").upsert({
-            "symbol": symbol,
-            "date": r["date"].strftime("%Y-%m-%d"),
-            "embedding": embedding
-        }).execute()
+        try:
+            supabase.table("stock_embeddings").upsert({
+                "symbol": symbol,
+                "date": r["date"].strftime("%Y-%m-%d"),
+                "embedding": embedding
+            }).execute()
+        except Exception as e:
+            print(f"Error inserting embedding for {symbol} on {r['date']}: {e}")
 
 print("✅ Stock data and embeddings updated successfully!")
