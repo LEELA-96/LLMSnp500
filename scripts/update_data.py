@@ -1,123 +1,99 @@
 import os
 import pandas as pd
-import yfinance as yf
 from tqdm import tqdm
-from datetime import datetime, timedelta
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 
-# -----------------------------
-# 1️⃣ Supabase setup
-# -----------------------------
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# ---------------------------
+# CONFIG
+# ---------------------------
+COMPANY_FILE = "data/Company_S_HQ_1.xlsx"
+SYMBOL_FILE = "data/SP500_Symbols_2.csv"
+TABLE_NAME = "embeddings"
+
+# Supabase credentials (use your .env or repo secrets)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -----------------------------
-# 2️⃣ File paths (updated)
-# -----------------------------
-symbols_file = "data/SP500_Symbols_2.csv"
-company_file = "data/Company_S_HQ_1.xlsx"
+# ---------------------------
+# LOAD DATA
+# ---------------------------
+print("📂 Loading data...")
 
-# -----------------------------
-# 3️⃣ Load files
-# -----------------------------
-symbols_df = pd.read_csv(symbols_file)
-company_df = pd.read_excel(company_file)
+company_df = pd.read_excel(COMPANY_FILE)
+symbols_df = pd.read_csv(SYMBOL_FILE)
 
-# Strip column names
-company_df.columns = company_df.columns.str.strip()
-symbols_df.columns = symbols_df.columns.str.strip()
+print(f"✅ Loaded {len(company_df)} companies, {len(symbols_df)} symbols")
 
-# -----------------------------
-# 4️⃣ Insert/update company metadata
-# -----------------------------
-print("🔹 Updating company metadata...")
+# ---------------------------
+# PREP DATA
+# ---------------------------
+# Adjust column names if different
+company_df = company_df.rename(columns={
+    "Name": "name",
+    "Sector": "sector",
+    "Headquarters": "hq"
+})
 
+symbols_df = symbols_df.rename(columns={
+    "Symbol": "symbol",
+    "Security": "security"
+})
+
+# Merge on company name if available, else just keep them separate
+data = []
 for _, row in company_df.iterrows():
-    try:
-        supabase.table("company_metadata").upsert({
-            "symbol": row["Symbol"],
-            "company_name": row["Company Name"],
-            "headquarters": row.get("City", "Unknown")  # use City as HQ
-        }).execute()
-    except Exception as e:
-        print(f"Error inserting company {row['Symbol']}: {e}")
-
-print("✅ Company metadata updated.")
-
-# -----------------------------
-# 5️⃣ Fetch historical stock data & embeddings
-# -----------------------------
-model = SentenceTransformer('all-MiniLM-L6-v2')  # fast & free
-
-for _, row in tqdm(symbols_df.iterrows(), total=len(symbols_df), desc="Processing symbols"):
-    symbol = row["Symbol"]
-
-    # Check latest date in Supabase
-    try:
-        res = supabase.table("stock_data").select("date").eq("symbol", symbol).order("date", desc=True).limit(1).execute()
-        if res.data:
-            last_date = pd.to_datetime(res.data[0]['date'])
-            start_date = last_date + timedelta(days=1)
-        else:
-            start_date = datetime.now() - timedelta(days=5*365)  # last 5 years
-    except Exception as e:
-        print(f"Error checking last date for {symbol}: {e}")
-        start_date = datetime.now() - timedelta(days=5*365)
-
-    end_date = datetime.now()
-    if start_date > end_date:
-        continue  # already up to date
-
-    # Download stock data
-    try:
-        df = yf.download(symbol, start=start_date.strftime("%Y-%m-%d"), end=end_date.strftime("%Y-%m-%d"))
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
-        continue
-
-    if df.empty:
-        continue
-
-    df.reset_index(inplace=True)
-    df = df.rename(columns={
-        "Date": "date",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Volume": "volume"
+    data.append({
+        "symbol": row.get("symbol", ""),
+        "name": row.get("name", ""),
+        "sector": row.get("sector", ""),
+        "hq": row.get("hq", "")
     })
 
-    for _, r in df.iterrows():
-        try:
-            date_val = pd.to_datetime(r["date"])
-            date_str = date_val.strftime("%Y-%m-%d")
+print(f"✅ Prepared {len(data)} rows for embeddings")
 
-            # Insert stock data
-            supabase.table("stock_data").upsert({
-                "symbol": symbol,
-                "date": date_str,
-                "open": float(r["open"]),
-                "high": float(r["high"]),
-                "low": float(r["low"]),
-                "close": float(r["close"]),
-                "volume": int(r["volume"])
-            }).execute()
+# ---------------------------
+# EMBEDDINGS
+# ---------------------------
+print("🧠 Loading embedding model...")
+model = SentenceTransformer("all-MiniLM-L6-v2")
 
-            # Generate embedding
-            text_for_embedding = f"{symbol} {date_str} open:{r['open']} close:{r['close']} high:{r['high']} low:{r['low']} volume:{r['volume']}"
-            embedding = model.encode(text_for_embedding).tolist()
+rows_to_insert = []
+for row in tqdm(data, desc="Encoding rows"):
+    text = f"{row['symbol']} {row['name']} {row['sector']} {row['hq']}"
+    embedding = model.encode(text).tolist()
+    rows_to_insert.append({
+        "symbol": row["symbol"],
+        "name": row["name"],
+        "sector": row["sector"],
+        "hq": row["hq"],
+        "embedding": embedding
+    })
 
-            # Insert embedding
-            supabase.table("stock_embeddings").upsert({
-                "symbol": symbol,
-                "date": date_str,
-                "embedding": embedding
-            }).execute()
+print(f"✅ Generated embeddings for {len(rows_to_insert)} rows")
 
-        except Exception as e:
-            print(f"Error processing {symbol} on {r['date']}: {e}")
+# ---------------------------
+# SAVE TO SUPABASE
+# ---------------------------
+print(f"⬆️ Inserting into Supabase table: {TABLE_NAME}")
 
-print("✅ Stock data and embeddings updated successfully!")
+# Ensure table exists: you must create it once in Supabase SQL Editor:
+#   create table if not exists embeddings (
+#       id bigserial primary key,
+#       symbol text,
+#       name text,
+#       sector text,
+#       hq text,
+#       embedding vector(384)  -- depends on model dimensions
+#   );
+
+batch_size = 50
+for i in range(0, len(rows_to_insert), batch_size):
+    batch = rows_to_insert[i:i+batch_size]
+    res = supabase.table(TABLE_NAME).insert(batch).execute()
+    print(f"Inserted batch {i//batch_size + 1}: {len(batch)} rows")
+
+print("🎉 Done! All embeddings inserted.")
+
