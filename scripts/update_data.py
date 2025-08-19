@@ -1,60 +1,65 @@
+import os
 import pandas as pd
 import numpy as np
-from supabase import create_client, Client
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
-import os
+from supabase import create_client
+from sentence_transformers import SentenceTransformer
 
-# -----------------------------
-# Config
-# -----------------------------
+# ---------------- CONFIG ----------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-TABLE_NAME = "embeddings"
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+TABLE_NAME = "embeddings"
+BATCH_SIZE = 50
+EXCEL_FILE = "data/Company_S_HQ_1.xlsx"   # ✅ fixed path
+CSV_FILE = "data/SP500_Symbols_2.csv"
+
+# ---------------- INIT ----------------
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# -----------------------------
-# Load company & symbols data
-# -----------------------------
-companies_df = pd.read_excel("Company_S_HQ_1.xlsx")
-symbols_df = pd.read_csv("SP500_Symbols_2.csv")
+# ---------------- LOAD DATA ----------------
+print("📂 Loading data...")
+companies_df = pd.read_excel(EXCEL_FILE)
+symbols_df = pd.read_csv(CSV_FILE)
 
-# Standardize column names
-companies_df.columns = [c.strip().lower() for c in companies_df.columns]
-symbols_df.columns = [c.strip().lower() for c in symbols_df.columns]
+# Merge company and symbol data
+df = pd.merge(symbols_df, companies_df, on="Symbol", how="left")
 
-# Merge on symbol
-df = pd.merge(symbols_df, companies_df, on="symbol", how="inner")
+# If 'HQ' column missing, skip it safely
+text_columns = ["Symbol", "Name"]
+if "HQ" in df.columns:
+    text_columns.append("HQ")
 
-print(f"✅ Merged data shape: {df.shape}")
+df["text"] = df[text_columns].astype(str).agg(" - ".join, axis=1)
 
-# -----------------------------
-# Generate embeddings
-# -----------------------------
-rows_to_insert = []
-for _, row in tqdm(df.iterrows(), total=len(df), desc="Encoding rows"):
-    text = f"{row['symbol']} {row['name']} {row['sector']}"
-    embedding = model.encode(text).tolist()
-    rows_to_insert.append({
-        "symbol": row["symbol"],
-        "name": row["name"],
-        "sector": row["sector"],
-        "embedding": embedding
-    })
+# ---------------- EMBEDDINGS ----------------
+print(f"🧾 Encoding {len(df)} rows...")
+embeddings = []
+for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Encoding rows"):
+    batch_texts = df["text"].iloc[i:i + BATCH_SIZE].tolist()
+    batch_embeddings = model.encode(batch_texts, convert_to_numpy=True).tolist()
+    embeddings.extend(batch_embeddings)
 
-print(f"✅ Generated embeddings for {len(rows_to_insert)} rows")
+df["embedding"] = embeddings
+print(f"✅ Generated embeddings for {len(df)} rows")
 
-# -----------------------------
-# Insert into Supabase
-# -----------------------------
-BATCH_SIZE = 100
-for i in range(0, len(rows_to_insert), BATCH_SIZE):
-    batch = rows_to_insert[i:i+BATCH_SIZE]
-    print(f"⬆️ Inserting batch {i//BATCH_SIZE+1} ({len(batch)} rows)")
-    res = supabase.table(TABLE_NAME).insert(batch).execute()
-    if hasattr(res, "error") and res.error:
-        print("❌ Error inserting:", res.error)
-    else:
-        print("✅ Batch inserted successfully")
+# ---------------- UPSERT TO SUPABASE ----------------
+print(f"⬆️ Inserting into Supabase table: {TABLE_NAME}")
+
+for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Uploading batches"):
+    batch = df.iloc[i:i + BATCH_SIZE]
+    records = []
+    for _, row in batch.iterrows():
+        record = {
+            "symbol": row["Symbol"],
+            "name": row["Name"],
+            "embedding": row["embedding"]
+        }
+        if "HQ" in row:  # only if HQ column exists
+            record["hq"] = row["HQ"]
+        records.append(record)
+
+    res = supabase.table(TABLE_NAME).upsert(records).execute()
+
+print("🎉 Done! All embeddings uploaded to Supabase.")
