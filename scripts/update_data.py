@@ -5,15 +5,14 @@ from supabase import create_client
 from sentence_transformers import SentenceTransformer
 
 # ---------------- CONFIG ----------------
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
-# Debug prints to verify environment variables
-print("Supabase URL:", SUPABASE_URL)
-print("Supabase Key length:", len(SUPABASE_KEY) if SUPABASE_KEY else "Not Set")
+print("SUPABASE_URL repr:", repr(SUPABASE_URL))
+print("SUPABASE_KEY length:", len(SUPABASE_KEY) if SUPABASE_KEY else "Not set")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Supabase URL or Key not set. Check environment variables.")
+    raise ValueError("Supabase URL or Key not set or empty. Check environment variables.")
 
 TABLE_NAME = "embeddings"
 BATCH_SIZE = 50
@@ -32,12 +31,17 @@ symbols_df = pd.read_csv(CSV_FILE)
 # Merge on 'Symbol'
 df = pd.merge(symbols_df, companies_df, on="Symbol", how="left")
 
-# Construct text for embeddings
-text_columns = ["Symbol", "Name"]
-if "HQ" in df.columns:
-    text_columns.append("HQ")
+# Use 'City' column as HQ if available
+if "City" in df.columns:
+    df["HQ"] = df["City"]
+else:
+    df["HQ"] = None
 
-df["text"] = df[text_columns].astype(str).agg(" - ".join, axis=1)
+# Construct text for embeddings (Symbol - Name - HQ)
+text_cols = ["Symbol", "Name"]
+if "HQ" in df.columns:
+    text_cols.append("HQ")
+df["text"] = df[text_cols].astype(str).agg(" - ".join, axis=1)
 
 # ---------------- EMBEDDINGS ----------------
 print(f"🧾 Encoding {len(df)} rows...")
@@ -61,7 +65,7 @@ for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Uploading batches"):
             "name": row["Name"],
             "embedding": row["embedding"]
         }
-        # Only add HQ if exists
+        # Add HQ if exists
         if "HQ" in row and pd.notnull(row["HQ"]):
             record["hq"] = row["HQ"]
         records.append(record)
