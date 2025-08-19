@@ -5,15 +5,8 @@ from supabase import create_client
 from sentence_transformers import SentenceTransformer
 
 # ---------------- CONFIG ----------------
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
-
-print("SUPABASE_URL repr:", repr(SUPABASE_URL))
-print("SUPABASE_KEY length:", len(SUPABASE_KEY) if SUPABASE_KEY else "Not set")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Supabase URL or Key not set or empty. Check environment variables.")
-
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://bhssymcperznabnnzyin.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoc3N5bWNwZXp...")
 TABLE_NAME = "embeddings"
 BATCH_SIZE = 50
 EXCEL_FILE = "data/Company_S_HQ_1.xlsx"
@@ -28,19 +21,30 @@ print("📂 Loading data...")
 companies_df = pd.read_excel(EXCEL_FILE)
 symbols_df = pd.read_csv(CSV_FILE)
 
-# Merge on 'Symbol'
-df = pd.merge(symbols_df, companies_df, on="Symbol", how="left")
+# Normalize column names
+companies_df.columns = companies_df.columns.str.strip().str.lower()
+symbols_df.columns = symbols_df.columns.str.strip().str.lower()
 
-# Use 'City' column as HQ if available
-if "City" in df.columns:
-    df["HQ"] = df["City"]
-else:
-    df["HQ"] = None
+# Ensure required columns
+if "symbol" not in symbols_df.columns:
+    raise ValueError("No 'symbol' column found in SP500_Symbols_2.csv")
+if "name" not in companies_df.columns:
+    possible_name_cols = [c for c in companies_df.columns if "name" in c]
+    if possible_name_cols:
+        companies_df.rename(columns={possible_name_cols[0]: "name"}, inplace=True)
+    else:
+        raise ValueError("No 'name' column found in Company_S_HQ_1.xlsx")
 
-# Construct text for embeddings (Symbol - Name - HQ)
-text_cols = ["Symbol", "Name"]
-if "HQ" in df.columns:
-    text_cols.append("HQ")
+# Merge data
+df = pd.merge(symbols_df, companies_df, on="symbol", how="left")
+
+# Use 'city' as HQ if exists
+df["hq"] = df["city"] if "city" in df.columns else None
+
+# Prepare text for embeddings
+text_cols = ["symbol", "name"]
+if "hq" in df.columns:
+    text_cols.append("hq")
 df["text"] = df[text_cols].astype(str).agg(" - ".join, axis=1)
 
 # ---------------- EMBEDDINGS ----------------
@@ -61,13 +65,12 @@ for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Uploading batches"):
     records = []
     for _, row in batch.iterrows():
         record = {
-            "symbol": row["Symbol"],
-            "name": row["Name"],
-            "embedding": row["embedding"]
+            "symbol": row.get("symbol"),
+            "name": row.get("name"),
+            "embedding": row.get("embedding")
         }
-        # Add HQ if exists
-        if "HQ" in row and pd.notnull(row["HQ"]):
-            record["hq"] = row["HQ"]
+        if row.get("hq"):
+            record["hq"] = row.get("hq")
         records.append(record)
 
     res = supabase.table(TABLE_NAME).upsert(records).execute()
