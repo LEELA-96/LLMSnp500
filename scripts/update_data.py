@@ -1,17 +1,16 @@
 import os
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
 from supabase import create_client
 from sentence_transformers import SentenceTransformer
 
 # ---------------- CONFIG ----------------
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 TABLE_NAME = "embeddings"
 BATCH_SIZE = 50
-EXCEL_FILE = "data/Company_S_HQ_1.xlsx"   # ✅ fixed path
+EXCEL_FILE = "data/Company_S_HQ_1.xlsx"
 CSV_FILE = "data/SP500_Symbols_2.csv"
 
 # ---------------- INIT ----------------
@@ -23,10 +22,9 @@ print("📂 Loading data...")
 companies_df = pd.read_excel(EXCEL_FILE)
 symbols_df = pd.read_csv(CSV_FILE)
 
-# Merge company and symbol data
 df = pd.merge(symbols_df, companies_df, on="Symbol", how="left")
 
-# If 'HQ' column missing, skip it safely
+# Use 'HQ' only if exists
 text_columns = ["Symbol", "Name"]
 if "HQ" in df.columns:
     text_columns.append("HQ")
@@ -46,7 +44,6 @@ print(f"✅ Generated embeddings for {len(df)} rows")
 
 # ---------------- UPSERT TO SUPABASE ----------------
 print(f"⬆️ Inserting into Supabase table: {TABLE_NAME}")
-
 for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Uploading batches"):
     batch = df.iloc[i:i + BATCH_SIZE]
     records = []
@@ -56,10 +53,10 @@ for i in tqdm(range(0, len(df), BATCH_SIZE), desc="Uploading batches"):
             "name": row["Name"],
             "embedding": row["embedding"]
         }
-        if "HQ" in row:  # only if HQ column exists
+        if "HQ" in row:
             record["hq"] = row["HQ"]
         records.append(record)
+    supabase.table(TABLE_NAME).upsert(records).execute()
 
-    res = supabase.table(TABLE_NAME).upsert(records).execute()
+print("🎉 All embeddings uploaded successfully!")
 
-print("🎉 Done! All embeddings uploaded to Supabase.")
